@@ -1,0 +1,10 @@
+[Unit]
+Description=Run CIS agent hourly
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1h
+Unit=cis-agent.service
+
+[Install]
+WantedBy=timers.target

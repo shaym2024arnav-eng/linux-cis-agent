@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CIS Agent Dashboard</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <a href="#/">🛡️ CIS Agent Dashboard</a>
+  <span class="spacer"></span>
+  <span class="updated" id="updated"></span>
+  <button class="btn" id="refresh">↻ Refresh</button>
+</header>
+<main id="app"><div class="empty">Loading…</div></main>
+<script>
+const API = ""; // same origin: the Go server serves both this page and the API
+const REFRESH_MS = 30000;
+const app = document.getElementById("app");
+const state = { tab: "cis", filter: "all", search: "" }; // survives auto-refresh
+
+const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const pct = (pass, total) => total ? Math.round(pass * 100 / total) : 0;
+const ago = iso => {
+  const s = Math.max(0, (Date.now() - new Date(iso)) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+  return new Date(iso).toLocaleString();
+};
+const bar = p => `<div class="bar-row"><div class="bar"><span style="width:${p}%"></span></div><strong>${p}%</strong></div>`;
+const stat = (label, value, cls = "") => `<div class="stat"><div class="label">${label}</div><div class="value ${cls}">${value}</div></div>`;
+
+async function get(path) {
+  const r = await fetch(API + path);
+  if (!r.ok) throw new Error(`${path} returned HTTP ${r.status}`);
+  return r.json();
+}
+
+async function hostsView() {
+  const hosts = await get("/hosts");
+  const checks = hosts.reduce((n, h) => n + h.cis_total, 0);
+  const passed = hosts.reduce((n, h) => n + h.cis_pass, 0);
+  app.innerHTML = `
+    <div class="stats">
+      ${stat("Hosts reporting", hosts.length)}
+      ${stat("Average compliance", pct(passed, checks) + "%", pct(passed, checks) >= 80 ? "pass" : "fail")}
+      ${stat("Failed checks", checks - passed, checks - passed ? "fail" : "pass")}
+      ${stat("Packages tracked", hosts.reduce((n, h) => n + h.package_count, 0))}
+    </div>
+    <div class="card">
+      <h2>Hosts</h2>
+      ${hosts.length === 0 ? `<div class="empty">No hosts have reported yet. Run the agent on a Linux machine.</div>` : `
+      <div class="table-wrap"><table>
+        <tr><th>Hostname</th><th>OS</th><th>Kernel</th><th>Packages</th><th>CIS compliance</th><th>Last seen</th></tr>
+        ${hosts.map(h => `<tr class="click" data-id="${esc(h.host_id)}">
+          <td><a href="#/hosts/${encodeURIComponent(h.host_id)}">${esc(h.hostname)}</a></td>
+          <td>${esc(h.os_name)} ${esc(h.os_version)}</td>
+          <td>${esc(h.kernel)}</td>
+          <td>${esc(h.package_count)}</td>
+          <td>${bar(pct(h.cis_pass, h.cis_total))}<span class="muted">${esc(h.cis_pass)}/${esc(h.cis_total)} passed</span></td>
+          <td title="${esc(new Date(h.last_seen).toLocaleString())}">${esc(ago(h.last_seen))}</td>
+        </tr>`).join("")}
+      </table></div>`}
+    </div>`;
+  app.querySelectorAll("tr.click").forEach(tr =>
+    tr.onclick = () => location.hash = `#/hosts/${encodeURIComponent(tr.dataset.id)}`);
+}
+
+async function hostView(id) {
+  const enc = encodeURIComponent(id);
+  const [host, pkgs, cis] = await Promise.all([get(`/hosts/${enc}`), get(`/hosts/${enc}/apps`), get(`/hosts/${enc}/cis-results`)]);
+  const count = s => cis.filter(r => r.status === s).length;
+  const p = pct(host.cis_pass, host.cis_total);
+
+  app.innerHTML = `
+    <a class="back" href="#/">← All hosts</a>
+    <div class="card">
+      <h1>${esc(host.hostname)}</h1>
+      <div class="muted">${esc(host.os_name)} ${esc(host.os_version)} · last scan ${esc(ago(host.last_seen))}</div>
+      <div class="meta">
+        <div><span>Kernel</span>${esc(host.kernel)}</div>
+        <div><span>Agent version</span>${esc(host.agent_version)}</div>
+        <div><span>Last seen</span>${esc(new Date(host.last_seen).toLocaleString())}</div>
+        <div><span>Host ID</span><code>${esc(host.host_id)}</code></div>
+      </div>
+    </div>
+    <div class="stats">
+      <div class="stat"><div class="label">CIS compliance</div><div class="value ${p >= 80 ? "pass" : "fail"}">${p}%</div>${bar(p)}</div>
+      ${stat("Passed", count("pass"), "pass")}
+      ${stat("Failed", count("fail"), count("fail") ? "fail" : "")}
+      ${stat("Installed packages", pkgs.length)}
+    </div>
+    <div class="card">
+      <div class="tabs">
+        <button class="tab" data-tab="cis">CIS checks (${cis.length})</button>
+        <button class="tab" data-tab="pkgs">Packages (${pkgs.length})</button>
+      </div>
+      <div id="tab-body"></div>
+    </div>`;
+
+  const body = document.getElementById("tab-body");
+  const renderCIS = () => {
+    const shown = cis.filter(r => state.filter === "all" || r.status === state.filter);
+    body.innerHTML = `
+      <div class="toolbar">
+        ${[["all", `All (${cis.length})`], ["fail", `Failed (${count("fail")})`], ["pass", `Passed (${count("pass")})`]]
+          .map(([f, label]) => `<button class="chip ${state.filter === f ? "active" : ""}" data-filter="${f}">${label}</button>`).join("")}
+      </div>
+      ${shown.length === 0 ? `<div class="empty">No checks match this filter.</div>` : shown.map(r => `
+        <div class="check ${esc(r.status)}">
+          <div class="check-head">
+            <span class="badge ${esc(r.status)}">${esc(r.status).toUpperCase()}</span>
+            <span class="check-title">${esc(r.title)}</span>
+            <span class="check-id">${esc(r.check_id)} · CIS ${esc(r.cis_ref)}</span>
+          </div>
+          <pre>${esc(r.evidence)}</pre>
+        </div>`).join("")}`;
+    body.querySelectorAll("[data-filter]").forEach(b => b.onclick = () => { state.filter = b.dataset.filter; renderCIS(); });
+  };
+  const renderPkgs = () => {
+    body.innerHTML = `
+      <div class="toolbar"><input type="search" id="search" placeholder="Search ${pkgs.length} packages…" value="${esc(state.search)}"><span class="muted" id="pkg-count"></span></div>
+      <div class="table-wrap"><table id="pkg-table"></table></div>`;
+    const input = document.getElementById("search");
+    const draw = () => {
+      const q = state.search.toLowerCase();
+      const rows = pkgs.filter(p => p.name.toLowerCase().includes(q));
+      document.getElementById("pkg-count").textContent = `${rows.length} shown`;
+      document.getElementById("pkg-table").innerHTML = `<tr><th>Name</th><th>Version</th><th>Arch</th><th>Manager</th></tr>` +
+        rows.map(p => `<tr><td>${esc(p.name)}</td><td>${esc(p.version)}</td><td>${esc(p.arch)}</td><td>${esc(p.manager)}</td></tr>`).join("");
+    };
+    input.oninput = () => { state.search = input.value.trim(); draw(); };
+    draw();
+  };
+  const showTab = () => {
+    app.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.dataset.tab === state.tab));
+    (state.tab === "cis" ? renderCIS : renderPkgs)();
+  };
+  app.querySelectorAll(".tab").forEach(t => t.onclick = () => { state.tab = t.dataset.tab; showTab(); });
+  showTab();
+}
+
+let loading = false;
+async function route() {
+  if (loading) return;
+  loading = true;
+  const m = location.hash.match(/^#\/hosts\/(.+)$/);
+  try {
+    await (m ? hostView(decodeURIComponent(m[1])) : hostsView());
+    document.getElementById("updated").textContent = `Updated ${new Date().toLocaleTimeString()} · auto-refresh 30s`;
+  } catch (e) {
+    app.innerHTML = `<div class="error-box">Could not load data: ${esc(e.message)}</div>`;
+  } finally {
+    loading = false;
+  }
+}
+
+window.addEventListener("hashchange", () => { state.filter = "all"; state.search = ""; state.tab = "cis"; route(); });
+document.getElementById("refresh").onclick = route;
+// Don't redraw while the user is typing in the package search box.
+setInterval(() => { if (document.activeElement?.id !== "search") route(); }, REFRESH_MS);
+route();
+</script>
+</body>
+</html>

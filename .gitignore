@@ -1,0 +1,5 @@
+bin/
+dist/
+*.pem
+*.db
+node_modules/

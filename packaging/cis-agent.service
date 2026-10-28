@@ -1,0 +1,8 @@
+[Unit]
+Description=CIS agent - package inventory and CIS compliance scan
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/cis-agent -config /etc/cis-agent/agent.json

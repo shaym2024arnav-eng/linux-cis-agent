@@ -1,0 +1,23 @@
+name: cis-agent
+arch: amd64
+platform: linux
+version: 0.1.0
+maintainer: Arnav Shyam <you@example.com>
+description: Linux package inventory and CIS benchmark compliance agent
+contents:
+  - src: agent/bin/cis-agent
+    dst: /usr/bin/cis-agent
+    file_info: { mode: 0755 }
+  - src: packaging/cis-agent.service
+    dst: /usr/lib/systemd/system/cis-agent.service
+    file_info: { mode: 0644 }
+  - src: packaging/cis-agent.timer
+    dst: /usr/lib/systemd/system/cis-agent.timer
+    file_info: { mode: 0644 }
+  - src: packaging/agent.json
+    dst: /etc/cis-agent/agent.json
+    type: config|noreplace
+    file_info: { mode: 0600 }
+scripts:
+  postinstall: packaging/postinstall.sh
+  preremove: packaging/preremove.sh
