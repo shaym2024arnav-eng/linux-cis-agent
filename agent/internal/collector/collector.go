@@ -35,8 +35,13 @@ func dpkg() ([]Package, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dpkg-query: %w", err)
 	}
+	return parseDpkg(string(out)), nil
+}
+
+// parseDpkg parses "status<TAB>name<TAB>version<TAB>arch" lines from dpkg-query.
+func parseDpkg(out string) []Package {
 	var pkgs []Package
-	for _, line := range strings.Split(string(out), "\n") {
+	for _, line := range strings.Split(out, "\n") {
 		f := strings.Split(line, "\t")
 		// "ii" = installed; skip removed packages that only left config files ("rc")
 		if len(f) != 4 || !strings.HasPrefix(f[0], "ii") {
@@ -44,7 +49,7 @@ func dpkg() ([]Package, error) {
 		}
 		pkgs = append(pkgs, Package{Name: f[1], Version: f[2], Arch: f[3], Manager: "dpkg"})
 	}
-	return pkgs, nil
+	return pkgs
 }
 
 func rpm() ([]Package, error) {
@@ -53,13 +58,18 @@ func rpm() ([]Package, error) {
 	if err != nil {
 		return nil, fmt.Errorf("rpm -qa: %w", err)
 	}
+	return parseRPM(string(out)), nil
+}
+
+// parseRPM parses "name<TAB>version-release<TAB>arch" lines from rpm -qa.
+func parseRPM(out string) []Package {
 	var pkgs []Package
-	for _, line := range strings.Split(string(out), "\n") {
+	for _, line := range strings.Split(out, "\n") {
 		f := strings.Split(line, "\t")
 		if len(f) != 3 {
 			continue
 		}
 		pkgs = append(pkgs, Package{Name: f[0], Version: f[1], Arch: f[2], Manager: "rpm"})
 	}
-	return pkgs, nil
+	return pkgs
 }

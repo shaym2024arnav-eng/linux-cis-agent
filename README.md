@@ -1,6 +1,6 @@
 # Linux CIS Agent
 
-A lightweight Linux agent written in Go. It collects the installed packages on a host, runs 10 security configuration checks mapped to the CIS Ubuntu Linux Benchmark (Level 1) and sends the results as JSON over HTTPS to a backend on AWS. The backend stores the data, exposes REST APIs and serves a web dashboard.
+A lightweight Linux agent written in Go. It collects the installed packages on a host, runs 10 security configuration checks mapped to the CIS Ubuntu Linux 22.04 LTS Benchmark (Level 1) and sends the results as JSON over HTTPS to a backend on AWS. The backend stores the data, exposes REST APIs and serves a web dashboard.
 
 ## Architecture
 
@@ -32,18 +32,26 @@ A lightweight Linux agent written in Go. It collects the installed packages on a
 
 ## CIS checks
 
-| ID | Check | How it is verified | CIS section |
+References are recommendation numbers from the **CIS Ubuntu Linux 22.04 LTS Benchmark v2.0.0, Level 1 – Server**.
+
+| ID | Check | How it is verified | CIS recommendation |
 |---|---|---|---|
-| CIS-01 | Password expiration and complexity | `PASS_MAX_DAYS` ≤ 365 in `/etc/login.defs`, `minlen` ≥ 14 in `pwquality.conf` | 5.4 / 5.5 |
-| CIS-02 | SSH root login disabled | `sshd -T` → `permitrootlogin no` | 5.2 |
-| CIS-03 | Unused filesystems disabled | `modprobe -n -v` for cramfs, freevxfs, udf and not loaded in `lsmod` | 1.1.1 |
-| CIS-04 | Firewall active | `ufw status` (or `firewall-cmd --state`) | 3.5 |
-| CIS-05 | Time synchronization | chrony / systemd-timesyncd / ntp active | 2.1 |
-| CIS-06 | auditd running | `systemctl is-active` and `is-enabled auditd` | 4.1.1 |
-| CIS-07 | AppArmor / SELinux enabled | `aa-status --enabled` (or `getenforce` = Enforcing) | 1.6.1 |
-| CIS-08 | No world-writable files | `find / -xdev -type f -perm -0002` | 6.1 |
-| CIS-09 | GDM auto-login disabled | `AutomaticLoginEnable` in `/etc/gdm3/custom.conf` (N/A if no GDM) | 1.8 |
-| CIS-10 | `/etc/shadow` permissions | mode 0640 or stricter, owned by root | 6.1 |
+| CIS-01 | Password expiration and minimum length | `PASS_MAX_DAYS` 1–365 in `/etc/login.defs`; `minlen` ≥ 14 in `/etc/security/pwquality.conf` | 5.4.1.1, 5.3.3.2.2 |
+| CIS-02 | SSH root login disabled | `sshd -T` → `permitrootlogin no` (effective config, including drop-in files) | 5.1.20 |
+| CIS-03 | Unused filesystem modules not available | `modprobe -n -v` shows `install /bin/false` (or no module) for cramfs, freevxfs, udf, and none are loaded | 1.1.1.1, 1.1.1.2, 1.1.1.7 |
+| CIS-04 | Host firewall enabled | `ufw status` is active (or `firewall-cmd --state` is running) | 4.1.3 |
+| CIS-05 | A single time sync daemon in use | Exactly one of chrony, systemd-timesyncd and ntp is active | 2.3.1.1 |
+| CIS-06 | auditd installed, enabled and active | `systemctl is-active` / `is-enabled auditd` | 6.3.1.1, 6.3.1.2 |
+| CIS-07 | AppArmor (or SELinux) enabled | `aa-status --enabled` (or `getenforce` = Enforcing) | 1.3.1.2 |
+| CIS-08 | No world-writable files | `find / -xdev -type f -perm -0002` returns nothing | 7.1.11 |
+| CIS-09 | GDM automatic login disabled | `AutomaticLoginEnable` is not true in GDM's `custom.conf` (passes if GDM isn't installed) | 1.7 section* |
+| CIS-10 | `/etc/shadow` permissions | Mode 0640 or stricter, owned by root | 7.1.5 |
+
+\* GDM auto-login comes from the assignment's example list. The 22.04 benchmark has no separate recommendation for it, so it's mapped to the GDM section (1.7).
+
+The same controls exist in the **CIS Ubuntu 24.04 Benchmark v1.0.0** (used on the test host). Only a few numbers differ there: udf 1.1.1.8, ufw 4.2.3, auditd 6.2.1.1/6.2.1.2.
+
+squashfs (1.1.1.6) is deliberately not checked: Ubuntu snaps need it, and the benchmark notes this.
 
 Each result is `pass`, `fail` or `error`, and it includes the raw evidence (command output or config line) used to decide.
 
@@ -60,10 +68,10 @@ Each result is `pass`, `fail` or `error`, and it includes the raw evidence (comm
 Example agent payload:
 ```json
 {
-  "agent_version": "0.1.0",
+  "agent_version": "0.2.0",
   "host": { "host_id": "…", "hostname": "ip-172-31-43-42", "os_name": "Ubuntu", "os_version": "24.04", "kernel": "…" },
   "packages": [ { "name": "openssh-server", "version": "1:9.6p1-3ubuntu13", "arch": "amd64", "manager": "dpkg" } ],
-  "cis_results": [ { "id": "CIS-02", "title": "SSH root login disabled", "cis_ref": "5.2", "status": "pass", "evidence": "permitrootlogin no" } ]
+  "cis_results": [ { "id": "CIS-02", "title": "SSH root login disabled", "cis_ref": "5.1.20", "status": "pass", "evidence": "permitrootlogin no" } ]
 }
 ```
 
@@ -81,13 +89,31 @@ sudo ./bin/cis-agent                   # send it (reads /etc/cis-agent/agent.jso
 { "api_url": "https://<server-host>", "api_key": "<key>" }
 ```
 
+### Tests
+Run these on Linux (the agent's checks use Linux-only system calls):
+```bash
+cd agent  && go test ./...
+cd server && go test ./...
+```
+- **Agent tests** cover:
+  - config parsing and the password, GDM, `/etc/shadow` and time-sync decision logic
+  - status mapping (pass/fail/error)
+  - dpkg and rpm output parsing
+  - `/etc/os-release` parsing
+  - the sender's retry behaviour (retries 5xx, gives up after 3 attempts, never retries 4xx)
+- **Server tests** run the real HTTP handlers against a temporary SQLite database:
+  - API-key rejection, invalid JSON and missing host ID
+  - ingest followed by every read endpoint
+  - a re-scan replacing the previous data
+  - 404 and 400 responses
+
 ### Package (.deb / .rpm)
 ```bash
 go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
 mkdir -p dist
 nfpm pkg --config packaging/nfpm.yaml --packager deb --target dist/
 nfpm pkg --config packaging/nfpm.yaml --packager rpm --target dist/
-sudo apt install ./dist/cis-agent_0.1.0_amd64.deb
+sudo apt install ./dist/cis-agent_0.2.0_amd64.deb
 dpkg -l cis-agent                      # registered with the package manager
 systemctl list-timers | grep cis       # runs hourly
 ```

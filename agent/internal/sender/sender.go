@@ -11,6 +11,11 @@ import (
 
 const maxAttempts = 3
 
+// backoff is the wait before retry number attempt+1: 2s, then 8s. Tests shorten it.
+var backoff = func(attempt int) time.Duration {
+	return time.Duration(attempt*attempt*2) * time.Second
+}
+
 // Send POSTs payload as JSON over HTTPS, retrying on network and 5xx errors.
 func Send(url, apiKey string, payload any) error {
 	body, err := json.Marshal(payload)
@@ -42,7 +47,7 @@ func Send(url, apiKey string, payload any) error {
 			}
 		}
 		if attempt < maxAttempts {
-			time.Sleep(time.Duration(attempt*attempt*2) * time.Second) // 2s, 8s
+			time.Sleep(backoff(attempt))
 		}
 	}
 	return fmt.Errorf("send failed after %d attempts: %w", maxAttempts, lastErr)

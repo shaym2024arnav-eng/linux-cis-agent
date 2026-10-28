@@ -9,24 +9,34 @@ import (
 	"syscall"
 )
 
-// CIS refs point at sections of the CIS Ubuntu 22.04 LTS Benchmark (Level 1).
-// Replace them with the exact recommendation numbers from the PDF you download.
+// CIS refs are recommendation numbers from the CIS Ubuntu Linux 22.04 LTS
+// Benchmark v2.0.0, Level 1 - Server.
 var checks = []check{
-	{"CIS-01", "Password expiration and complexity configured", "5.4 / 5.5", checkPasswordPolicy},
-	{"CIS-02", "SSH root login disabled", "5.2", checkSSHRootLogin},
-	{"CIS-03", "Unused filesystems (cramfs, freevxfs, udf) disabled", "1.1.1", checkUnusedFS},
-	{"CIS-04", "Host firewall (ufw/firewalld) active", "3.5", checkFirewall},
-	{"CIS-05", "Time synchronization running", "2.1", checkTimeSync},
-	{"CIS-06", "auditd installed and running", "4.1.1", checkAuditd},
-	{"CIS-07", "AppArmor/SELinux enabled", "1.6.1", checkMAC},
-	{"CIS-08", "No world-writable files", "6.1", checkWorldWritable},
-	{"CIS-09", "GDM automatic login disabled", "1.8", checkGDMAutoLogin},
-	{"CIS-10", "/etc/shadow permissions restricted", "6.1", checkShadowPerms},
+	{"CIS-01", "Password expiration and minimum length configured", "5.4.1.1, 5.3.3.2.2", checkPasswordPolicy},
+	{"CIS-02", "SSH root login disabled", "5.1.20", checkSSHRootLogin},
+	{"CIS-03", "Unused filesystem kernel modules (cramfs, freevxfs, udf) not available", "1.1.1.1, 1.1.1.2, 1.1.1.7", checkUnusedFS},
+	{"CIS-04", "Host firewall (ufw/firewalld) enabled", "4.1.3", checkFirewall},
+	{"CIS-05", "A single time synchronization daemon is in use", "2.3.1.1", checkTimeSync},
+	{"CIS-06", "auditd installed, enabled and active", "6.3.1.1, 6.3.1.2", checkAuditd},
+	{"CIS-07", "AppArmor/SELinux enabled", "1.3.1.2", checkMAC},
+	{"CIS-08", "No world-writable files", "7.1.11", checkWorldWritable},
+	// Not a standalone 22.04 recommendation: it's from the assignment and sits in the GDM section (1.7).
+	{"CIS-09", "GDM automatic login disabled", "1.7 (GDM)", checkGDMAutoLogin},
+	{"CIS-10", "/etc/shadow permissions restricted", "7.1.5", checkShadowPerms},
 }
 
+// File locations, overridable in tests.
+var (
+	loginDefsPath  = "/etc/login.defs"
+	pwqualityPath  = "/etc/security/pwquality.conf"
+	gdmConfPaths   = []string{"/etc/gdm3/custom.conf", "/etc/gdm/custom.conf"}
+	shadowPath     = "/etc/shadow"
+	timeSyncGroups = [][]string{{"chrony", "chronyd"}, {"systemd-timesyncd"}, {"ntp", "ntpd"}}
+)
+
 func checkPasswordPolicy() (bool, string, error) {
-	maxDays, _ := configValue("/etc/login.defs", "PASS_MAX_DAYS")
-	minLen, _ := configValue("/etc/security/pwquality.conf", "minlen")
+	maxDays, _ := configValue(loginDefsPath, "PASS_MAX_DAYS")
+	minLen, _ := configValue(pwqualityPath, "minlen")
 	md, _ := strconv.Atoi(maxDays)
 	ml, _ := strconv.Atoi(minLen)
 	ok := md > 0 && md <= 365 && ml >= 14
@@ -84,12 +94,33 @@ func checkFirewall() (bool, string, error) {
 }
 
 func checkTimeSync() (bool, string, error) {
-	for _, svc := range []string{"chrony", "chronyd", "systemd-timesyncd", "ntp", "ntpd"} {
-		if out, _ := sh("systemctl", "is-active", svc); out == "active" {
-			return true, svc + " is active", nil
+	ok, evidence := evaluateTimeSync(timeSyncGroups, func(svc string) bool {
+		out, _ := sh("systemctl", "is-active", svc)
+		return out == "active"
+	})
+	return ok, evidence, nil
+}
+
+// evaluateTimeSync passes when exactly one daemon is active. Each group lists the
+// unit names of one daemon (chrony is also reachable through its chronyd alias).
+func evaluateTimeSync(groups [][]string, isActive func(string) bool) (bool, string) {
+	var active []string
+	for _, names := range groups {
+		for _, n := range names {
+			if isActive(n) {
+				active = append(active, n)
+				break
+			}
 		}
 	}
-	return false, "no time sync service active (checked chrony, systemd-timesyncd, ntp)", nil
+	switch len(active) {
+	case 0:
+		return false, "no time sync daemon active (checked chrony, systemd-timesyncd, ntp)"
+	case 1:
+		return true, active[0] + " is the only active time sync daemon"
+	default:
+		return false, "multiple time sync daemons active: " + strings.Join(active, ", ")
+	}
 }
 
 func checkAuditd() (bool, string, error) {
@@ -129,7 +160,7 @@ func checkWorldWritable() (bool, string, error) {
 }
 
 func checkGDMAutoLogin() (bool, string, error) {
-	for _, p := range []string{"/etc/gdm3/custom.conf", "/etc/gdm/custom.conf"} {
+	for _, p := range gdmConfPaths {
 		if _, err := os.Stat(p); err != nil {
 			continue
 		}
@@ -142,14 +173,17 @@ func checkGDMAutoLogin() (bool, string, error) {
 }
 
 func checkShadowPerms() (bool, string, error) {
-	fi, err := os.Stat("/etc/shadow")
+	fi, err := os.Stat(shadowPath)
 	if err != nil {
 		return false, "", err
 	}
-	mode := fi.Mode().Perm()
 	st := fi.Sys().(*syscall.Stat_t)
-	// 0640 or stricter: no owner execute, no group write/execute, nothing for others
-	ok := mode&0o137 == 0 && st.Uid == 0
-	return ok, fmt.Sprintf("/etc/shadow mode=%#o uid=%d gid=%d (want 0640 or stricter, owned by root)",
-		mode, st.Uid, st.Gid), nil
+	return shadowPermsOK(fi.Mode().Perm(), st.Uid), fmt.Sprintf("%s mode=%#o uid=%d gid=%d (want 0640 or stricter, owned by root)",
+		shadowPath, fi.Mode().Perm(), st.Uid, st.Gid), nil
+}
+
+// shadowPermsOK accepts 0640 or stricter (no owner execute, no group write/execute,
+// nothing for others) owned by root.
+func shadowPermsOK(mode os.FileMode, uid uint32) bool {
+	return mode&0o137 == 0 && uid == 0
 }

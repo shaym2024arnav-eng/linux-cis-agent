@@ -21,19 +21,22 @@ func main() {
 	}
 	s := &server{store: store, apiKey: apiKey}
 
+	addr := env("ADDR", "127.0.0.1:8080")
+	log.Printf("listening on %s", addr)
+	log.Fatal(http.ListenAndServe(addr, logRequests(s.routes(env("WEB_DIR", "web")))))
+}
+
+func (s *server) routes(webDir string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /ingest", s.ingest)
 	mux.HandleFunc("GET /hosts", s.listHosts)
 	mux.HandleFunc("GET /hosts/{id}", s.getHost)
 	mux.HandleFunc("GET /hosts/{id}/apps", s.listApps)
 	mux.HandleFunc("GET /hosts/{id}/cis-results", s.listCIS)
-	mux.HandleFunc("GET /apps", s.listApps)                               // ?host_id=
-	mux.HandleFunc("GET /cis-results", s.listCIS)                         // ?host_id=
-	mux.Handle("GET /", http.FileServer(http.Dir(env("WEB_DIR", "web")))) // frontend
-
-	addr := env("ADDR", "127.0.0.1:8080")
-	log.Printf("listening on %s", addr)
-	log.Fatal(http.ListenAndServe(addr, logRequests(mux)))
+	mux.HandleFunc("GET /apps", s.listApps)                // ?host_id=
+	mux.HandleFunc("GET /cis-results", s.listCIS)          // ?host_id=
+	mux.Handle("GET /", http.FileServer(http.Dir(webDir))) // frontend
+	return mux
 }
 
 type server struct {

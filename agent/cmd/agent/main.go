@@ -13,7 +13,7 @@ import (
 	"linux-cis-agent/agent/internal/sender"
 )
 
-const version = "0.1.0"
+const version = "0.2.0"
 
 type Config struct {
 	APIURL string `json:"api_url"`
